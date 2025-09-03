@@ -19,7 +19,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Scan projects and show GUID conflicts
+    /// Scan projects and show GUID differences
     Scan {
         /// Path to the main Unity project (GUIDs from this project will be preserved)
         #[arg(short, long)]
@@ -59,6 +59,10 @@ enum Commands {
         #[arg(short, long)]
         dry_run: bool,
         
+        /// Verbose output - show all file updates
+        #[arg(short, long)]
+        verbose: bool,
+        
         /// Export detailed report to a JSON file
         #[arg(short = 'r', long)]
         report: Option<PathBuf>,
@@ -77,9 +81,9 @@ fn main() -> Result<()> {
             validate_paths(&main, &subordinate)?;
             generate_operations_report(main, subordinate, output)?;
         }
-        Commands::Sync { main, subordinate, dry_run, report } => {
+        Commands::Sync { main, subordinate, dry_run, verbose, report } => {
             validate_paths(&main, &subordinate)?;
-            sync_projects(main, subordinate, dry_run, report)?;
+            sync_projects(main, subordinate, dry_run, verbose, report)?;
         }
     }
     
@@ -140,12 +144,11 @@ fn generate_operations_report(main: PathBuf, subordinate: PathBuf, output: PathB
     
     // Print summary
     println!("\n{}", "Report Summary:".bright_white().bold());
-    println!("  Total GUID to update: {}", report.summary.total_guid_conflicts);
+    println!("  Total GUID to change: {}", report.summary.total_guid_differences);
     println!("  Meta files to update: {}", report.summary.total_meta_files_to_update);
     println!("  Files with references: {}", report.summary.total_files_with_references);
     println!("  Total reference updates: {}", report.summary.total_reference_updates);
     
-    println!("\n{}", "Top 10 Most Referenced Assets:".bright_cyan().bold());
     for (i, op) in report.operations.iter().take(10).enumerate() {
         println!("  {}. {} ({} references)", 
             i + 1,
@@ -190,7 +193,7 @@ fn scan_projects(main: PathBuf, subordinate: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn sync_projects(main: PathBuf, subordinate: PathBuf, dry_run: bool, report_path: Option<PathBuf>) -> Result<()> {
+fn sync_projects(main: PathBuf, subordinate: PathBuf, dry_run: bool, verbose: bool, report_path: Option<PathBuf>) -> Result<()> {
     println!("{}", "Unity GUID Synchronizer".bright_white().bold());
     println!("{}", "========================".bright_white());
     println!("Main project: {}", main.display().to_string().green());
@@ -199,6 +202,9 @@ fn sync_projects(main: PathBuf, subordinate: PathBuf, dry_run: bool, report_path
         println!("{}", "Mode: DRY RUN (no changes will be made)".bright_cyan());
     } else {
         println!("{}", "Mode: LIVE (files will be modified)".bright_red().bold());
+    }
+    if verbose {
+        println!("{}", "Verbose: ON".bright_magenta());
     }
     println!();
     
@@ -217,9 +223,15 @@ fn sync_projects(main: PathBuf, subordinate: PathBuf, dry_run: bool, report_path
     
     let mut syncer = GuidSyncer::new(main_path, sub_path);
     syncer.scan_projects()?;
-    syncer.print_summary();
     
-    if !dry_run {
+    if verbose {
+        syncer.print_summary();
+    } else {
+        // Just show count for non-verbose
+        println!("Found {} GUID differences to resolve", syncer.get_difference_count());
+    }
+    
+    if !dry_run && syncer.get_difference_count() > 0 {
         println!();
         println!("{}", "WARNING: This will modify files in the subordinate project!".bright_red().bold());
         println!("Press Enter to continue or Ctrl+C to cancel...");
@@ -227,7 +239,7 @@ fn sync_projects(main: PathBuf, subordinate: PathBuf, dry_run: bool, report_path
         std::io::stdin().read_line(&mut input)?;
     }
     
-    let sync_report = syncer.sync_guids(dry_run)?;
+    let sync_report = syncer.sync_guids(dry_run, verbose)?;
     
     if let Some(report_path) = report_path {
         sync_report.export_to_file(&report_path)?;

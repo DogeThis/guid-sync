@@ -49,7 +49,7 @@ pub struct SyncOperationsReport {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncSummary {
-    pub total_guid_conflicts: usize,
+    pub total_guid_differences: usize,
     pub total_meta_files_to_update: usize,
     pub total_files_with_references: usize,
     pub total_reference_updates: usize,
@@ -94,13 +94,6 @@ impl SyncReport {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct GuidMapping {
-    pub file_path: PathBuf,
-    pub relative_path: PathBuf,
-    pub guid: String,
-}
-
 pub struct GuidSyncer {
     main_project: PathBuf,
     subordinate_project: PathBuf,
@@ -115,6 +108,10 @@ impl GuidSyncer {
             guid_mappings: HashMap::new(),
         }
     }
+    
+    pub fn get_difference_count(&self) -> usize {
+        self.guid_mappings.len()
+    }
 
     pub fn scan_projects(&mut self) -> Result<()> {
         println!("{}", "Scanning projects for GUID mappings...".bright_blue());
@@ -127,7 +124,7 @@ impl GuidSyncer {
                 if main_guid != sub_guid {
                     println!(
                         "{}: {} -> {}",
-                        format!("GUID conflict found for {}", rel_path.display()).yellow(),
+                        format!("GUID difference found for {}", rel_path.display()).yellow(),
                         sub_guid.red(),
                         main_guid.green()
                     );
@@ -141,7 +138,7 @@ impl GuidSyncer {
 
         println!(
             "{}",
-            format!("Found {} GUID conflicts", self.guid_mappings.len()).bright_yellow()
+            format!("Found {} GUID differences", self.guid_mappings.len()).bright_yellow()
         );
         Ok(())
     }
@@ -178,32 +175,34 @@ impl GuidSyncer {
         Ok(mappings)
     }
 
-    pub fn sync_guids(&self, dry_run: bool) -> Result<SyncReport> {
+    pub fn sync_guids(&self, dry_run: bool, verbose: bool) -> Result<SyncReport> {
         if self.guid_mappings.is_empty() {
-            println!("{}", "No GUID conflicts to resolve!".green());
+            println!("{}", "No GUID differences to resolve!".green());
             return Ok(SyncReport::new());
         }
 
-        println!(
-            "{}",
-            format!(
-                "Syncing GUIDs in subordinate project ({})...",
-                if dry_run { "DRY RUN" } else { "LIVE" }
-            )
-            .bright_blue()
-        );
+        if verbose {
+            println!(
+                "{}",
+                format!(
+                    "Syncing GUIDs in subordinate project ({})...",
+                    if dry_run { "DRY RUN" } else { "LIVE" }
+                )
+                .bright_blue()
+            );
+        }
 
         let mut report = SyncReport::new();
 
         // Update meta files
         for (rel_path, (main_guid, _sub_guid)) in &self.guid_mappings {
             let meta_path = self.subordinate_project.join(rel_path);
-            self.update_meta_file(&meta_path, main_guid, dry_run)?;
+            self.update_meta_file(&meta_path, main_guid, dry_run, verbose)?;
             report.meta_files_changed += 1;
         }
 
         // Update references in all Unity files
-        self.update_guid_references_with_report(dry_run, &mut report)?;
+        self.update_guid_references_with_report(dry_run, verbose, &mut report)?;
 
         if dry_run {
             report.print();
@@ -213,52 +212,26 @@ impl GuidSyncer {
         Ok(report)
     }
 
-    fn update_meta_file(&self, path: &Path, new_guid: &str, dry_run: bool) -> Result<()> {
-        if dry_run {
+    fn update_meta_file(&self, path: &Path, new_guid: &str, dry_run: bool, verbose: bool) -> Result<()> {
+        if dry_run && verbose {
             println!("  {} {}", "[DRY RUN]".cyan(), path.display());
             return Ok(());
         }
 
-        MetaFile::update_guid_in_file(path, new_guid)
-            .with_context(|| format!("Failed to update meta file: {}", path.display()))?;
-        println!("  {} {}", "Updated".green(), path.display());
-        Ok(())
-    }
-
-    fn update_guid_references(&self, dry_run: bool) -> Result<()> {
-        println!("{}", "Updating GUID references in Unity files...".bright_blue());
-
-        let guid_regex = Regex::new(r"guid:\s*([a-f0-9]{32})")?;
-        let file_id_regex = Regex::new(r"\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]{32}),\s*type:\s*\d+\}")?;
-
-        for entry in WalkDir::new(&self.subordinate_project)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            
-            // Skip meta files and non-files
-            if !path.is_file() || path.extension() == Some(std::ffi::OsStr::new("meta")) {
-                continue;
-            }
-            
-            // Check if file is likely a Unity YAML file by checking first line
-            if let Ok(file) = std::fs::File::open(path) {
-                let reader = std::io::BufReader::new(file);
-                if let Some(Ok(first_line)) = reader.lines().next() {
-                    // Unity YAML files typically start with %YAML
-                    if first_line.starts_with("%YAML") || first_line.starts_with("---") {
-                        self.update_file_guids(path, &guid_regex, &file_id_regex, dry_run)?;
-                    }
-                }
+        if !dry_run {
+            MetaFile::update_guid_in_file(path, new_guid)
+                .with_context(|| format!("Failed to update meta file: {}", path.display()))?;
+            if verbose {
+                println!("  {} {}", "Updated".green(), path.display());
             }
         }
-
         Ok(())
     }
 
-    fn update_guid_references_with_report(&self, dry_run: bool, report: &mut SyncReport) -> Result<()> {
-        println!("{}", "Updating GUID references in Unity files...".bright_blue());
+    fn update_guid_references_with_report(&self, dry_run: bool, verbose: bool, report: &mut SyncReport) -> Result<()> {
+        if verbose {
+            println!("{}", "Updating GUID references in Unity files...".bright_blue());
+        }
 
         let guid_regex = Regex::new(r"guid:\s*([a-f0-9]{32})")?;
         let file_id_regex = Regex::new(r"\{fileID:\s*\d+,\s*guid:\s*([a-f0-9]{32}),\s*type:\s*\d+\}")?;
@@ -280,71 +253,9 @@ impl GuidSyncer {
                 if let Some(Ok(first_line)) = reader.lines().next() {
                     // Unity YAML files typically start with %YAML
                     if first_line.starts_with("%YAML") || first_line.starts_with("---") {
-                        self.update_file_guids_with_report(path, &guid_regex, &file_id_regex, dry_run, report)?;
+                        self.update_file_guids_with_report(path, &guid_regex, &file_id_regex, dry_run, verbose, report)?;
                     }
                 }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn update_file_guids(
-        &self,
-        path: &Path,
-        guid_regex: &Regex,
-        file_id_regex: &Regex,
-        dry_run: bool,
-    ) -> Result<()> {
-        // Try to read file as UTF-8, skip if it fails
-        let content = match fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(e) => {
-                eprintln!("Warning: Could not read {} as UTF-8: {}", path.display(), e);
-                return Ok(());
-            }
-        };
-        
-        let mut modified = false;
-        let mut new_content = content.clone();
-
-        // Build reverse mapping: sub_guid -> main_guid
-        let guid_map: HashMap<&str, &str> = self
-            .guid_mappings
-            .values()
-            .map(|(main, sub)| (sub.as_str(), main.as_str()))
-            .collect();
-
-        // Replace in guid: patterns
-        for cap in guid_regex.captures_iter(&content) {
-            if let Some(old_guid) = cap.get(1) {
-                if let Some(new_guid) = guid_map.get(old_guid.as_str()) {
-                    let old_match = cap.get(0).unwrap().as_str();
-                    let new_match = format!("guid: {}", new_guid);
-                    new_content = new_content.replace(old_match, &new_match);
-                    modified = true;
-                }
-            }
-        }
-
-        // Replace in {fileID: ..., guid: ..., type: ...} patterns
-        for cap in file_id_regex.captures_iter(&content) {
-            if let Some(old_guid) = cap.get(1) {
-                if let Some(new_guid) = guid_map.get(old_guid.as_str()) {
-                    let old_match = cap.get(0).unwrap().as_str();
-                    let new_match = old_match.replace(old_guid.as_str(), new_guid);
-                    new_content = new_content.replace(old_match, &new_match);
-                    modified = true;
-                }
-            }
-        }
-
-        if modified {
-            if dry_run {
-                println!("  {} {}", "[DRY RUN]".cyan(), path.display());
-            } else {
-                fs::write(path, new_content)?;
-                println!("  {} {}", "Updated references in".green(), path.display());
             }
         }
 
@@ -357,6 +268,7 @@ impl GuidSyncer {
         guid_regex: &Regex,
         file_id_regex: &Regex,
         dry_run: bool,
+        verbose: bool,
         report: &mut SyncReport,
     ) -> Result<()> {
         // Try to read file as UTF-8, skip if it fails
@@ -410,11 +322,13 @@ impl GuidSyncer {
             report.files_with_references.insert(path.to_path_buf());
             report.total_references_replaced += file_ref_count;
             
-            if dry_run {
+            if dry_run && verbose {
                 println!("  {} {} ({} references)", "[DRY RUN]".cyan(), path.display(), file_ref_count);
-            } else {
+            } else if !dry_run {
                 fs::write(path, new_content)?;
-                println!("  {} {} ({} references)", "Updated references in".green(), path.display(), file_ref_count);
+                if verbose {
+                    println!("  {} {} ({} references)", "Updated references in".green(), path.display(), file_ref_count);
+                }
             }
         }
 
@@ -525,7 +439,7 @@ impl GuidSyncer {
         
         let report = SyncOperationsReport {
             summary: SyncSummary {
-                total_guid_conflicts: operations.len(),
+                total_guid_differences: operations.len(),
                 total_meta_files_to_update: operations.len(),
                 total_files_with_references: total_files_with_refs.len(),
                 total_reference_updates,
