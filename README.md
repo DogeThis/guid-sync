@@ -1,5 +1,7 @@
 # What it does
 
+When making Unity projects with AssetRipper, you will end up with different GUIDs every time you run an extraction. This can be problematic if you would like to import the results of different extractions into your active project. This tool helps solve this issue by remapping GUIDs. 
+
 Given two Unity projects, let's call them "main" (your actual project) and "subordinate" (the one you would like to import from), it
 
 1. Crawls over both projects and scans through Unity YAML files and `.meta` files to find their UUIDs
