@@ -140,7 +140,7 @@ fn generate_operations_report(main: PathBuf, subordinate: PathBuf, output: PathB
     
     // Print summary
     println!("\n{}", "Report Summary:".bright_white().bold());
-    println!("  Total GUID conflicts: {}", report.summary.total_guid_conflicts);
+    println!("  Total GUID to update: {}", report.summary.total_guid_conflicts);
     println!("  Meta files to update: {}", report.summary.total_meta_files_to_update);
     println!("  Files with references: {}", report.summary.total_files_with_references);
     println!("  Total reference updates: {}", report.summary.total_reference_updates);
